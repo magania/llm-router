@@ -27,7 +27,7 @@ from fastapi import HTTPException
 from .models import ChatCompletionRequest, ChatCompletionResponse, Usage, Choice, Message
 
 
-BackendType = Literal["openai", "cerebras", "local-llama", "custom"]
+BackendType = Literal["openai", "cerebras", "deepinfra", "ollama", "custom"]
 
 
 class OpenAIService:
@@ -44,7 +44,7 @@ class OpenAIService:
         Initialize the OpenAI-compatible service.
         
         Args:
-            backend_type: Type of backend (openai, cerebras, local-llama, custom)
+            backend_type: Type of backend (openai, cerebras, deepinfra, ollama, custom)
             base_url: Base URL for the API
             api_key: API key (not required for local servers)
             timeout: Request timeout in seconds
@@ -55,7 +55,7 @@ class OpenAIService:
         self.timeout = timeout
         
         # Validate required configurations
-        if backend_type in ["openai", "cerebras"] and not api_key:
+        if backend_type in ["openai", "cerebras", "deepinfra"] and not api_key:
             raise ValueError(f"{backend_type} backend requires an API key")
     
     def _get_headers(self) -> Dict[str, str]:
@@ -67,32 +67,14 @@ class OpenAIService:
         
         # Add authentication header if API key is provided
         if self.api_key:
-            if self.backend_type == "openai":
-                headers["Authorization"] = f"Bearer {self.api_key}"
-            elif self.backend_type == "cerebras":
-                headers["Authorization"] = f"Bearer {self.api_key}"
-            else:  # For custom backends, use Bearer by default
-                headers["Authorization"] = f"Bearer {self.api_key}"
+            headers["Authorization"] = f"Bearer {self.api_key}"
             
         return headers
     
     def _get_endpoint_url(self, endpoint: str) -> str:
         """Get the full URL for an endpoint."""
         endpoint = endpoint.lstrip('/')  # Remove leading slash
-        
-        # Handle different base URL formats
-        if self.backend_type == "local-llama":
-            # Local llama servers often use /v1 prefix
-            if not self.base_url.endswith('/v1'):
-                return f"{self.base_url}/v1/{endpoint}"
-            else:
-                return f"{self.base_url}/{endpoint}"
-        else:
-            # OpenAI and Cerebras use /v1 prefix
-            if not self.base_url.endswith('/v1'):
-                return f"{self.base_url}/v1/{endpoint}"
-            else:
-                return f"{self.base_url}/{endpoint}"
+        return f"{self.base_url}/{endpoint}"
     
     async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
         """Forward chat completion request to the backend API."""
@@ -101,7 +83,7 @@ class OpenAIService:
         payload = request.model_dump(exclude_unset=True)
         
         # Backend-specific payload adjustments
-        if self.backend_type == "local-llama":
+        if self.backend_type == "ollama":
             # Some local servers might not support all OpenAI parameters
             # Remove unsupported parameters that might cause errors
             payload.pop("logit_bias", None)
@@ -243,13 +225,12 @@ class OpenAIService:
             ]
         elif self.backend_type == "deepinfra":
             models = [
-                {"id": "meta-llama/Llama-2-70b-chat-hf", "object": "model", "created": current_time, "owned_by": "meta"},
-                {"id": "meta-llama/Meta-Llama-3-70B-Instruct", "object": "model", "created": current_time, "owned_by": "meta"},
-                {"id": "meta-llama/Meta-Llama-3-8B-Instruct", "object": "model", "created": current_time, "owned_by": "meta"},
-                {"id": "mistralai/Mixtral-8x7B-Instruct-v0.1", "object": "model", "created": current_time, "owned_by": "mistralai"},
-                {"id": "microsoft/WizardLM-2-8x22B", "object": "model", "created": current_time, "owned_by": "microsoft"},
+                {"id": "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo", "object": "model", "created": current_time, "owned_by": "deepinfra"},
+                {"id": "Qwen/Qwen3-Coder-480B-A35B-Instruct", "object": "model", "created": current_time, "owned_by": "deepinfra"},
+                {"id": "Qwen/Qwen3-30B-A3B", "object": "model", "created": current_time, "owned_by": "deepinfra"},
+                {"id": "Qwen/Qwen3-235B-A22B-Thinking-2507", "object": "model", "created": current_time, "owned_by": "deepinfra"},
             ]
-        elif self.backend_type == "local-llama":
+        elif self.backend_type == "ollama":
             models = [
                 {"id": "llama-2-7b-chat", "object": "model", "created": current_time, "owned_by": "local"},
                 {"id": "llama-2-13b-chat", "object": "model", "created": current_time, "owned_by": "local"},

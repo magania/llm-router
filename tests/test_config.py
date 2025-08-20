@@ -106,8 +106,30 @@ class TestSettingsInit:
     
     def test_settings_defaults(self):
         """Test Settings with default values."""
-        with patch.dict('os.environ', {}, clear=True):
-            settings = Settings()
+        import os
+        
+        # Store original values to restore later
+        original_env = {}
+        env_vars_to_clear = [
+            'CEREBRAS_API_KEY', 'CEREBRAS_BASE_URL', 'CEREBRAS_RATE_LIMIT_REQUESTS', 'CEREBRAS_RATE_LIMIT_WINDOW',
+            'DEEPINFRA_TOKEN', 'DEEPINFRA_BASE_URL',
+            'OPENAI_API_KEY', 'OPENAI_BASE_URL',
+            'OLLAMA_BASE_URL',
+            'HOST', 'PORT',
+            'API_TITLE', 'API_DESCRIPTION', 'API_VERSION',
+            'REQUEST_TIMEOUT', 'ROUTER_SERVICES',
+            'ENABLE_AUTH', 'AUTH_HEADER_NAME'
+        ]
+        
+        # Store original values and temporarily remove from environment
+        for key in env_vars_to_clear:
+            if key in os.environ:
+                original_env[key] = os.environ[key]
+                del os.environ[key]
+        
+        try:
+            # Create Settings with disabled .env file loading 
+            settings = Settings(_env_file=None)
             
             assert settings.cerebras_api_key is None
             assert settings.cerebras_base_url == "https://api.cerebras.ai/v1"
@@ -116,6 +138,11 @@ class TestSettingsInit:
             assert settings.ollama_base_url == "http://localhost:11434"
             assert settings.request_timeout == 60
             assert settings.router_services == ""
+            
+        finally:
+            # Restore original environment variables
+            for key, value in original_env.items():
+                os.environ[key] = value
             
     def test_settings_from_env_vars(self):
         """Test Settings loading from environment variables."""

@@ -18,11 +18,12 @@
 FastAPI application that replicates OpenAI API and forwards to multiple LLM backends.
 """
 import time
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from .config import settings
 from .models import (
@@ -30,6 +31,7 @@ from .models import (
     ChatCompletionResponse,
 )
 from .router_service import RouterService
+from .auth_service import AuthService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -53,8 +55,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global router instance (cached)
+# Global instances (cached)
 _router_instance = None
+_auth_service = None
 
 def get_router_service() -> RouterService:
     """Get router service instance (always uses router, even with single service)."""
@@ -69,11 +72,82 @@ def get_router_service() -> RouterService:
     
     return _router_instance
 
+def get_auth_service() -> AuthService:
+    """Get authentication service instance."""
+    global _auth_service
+    
+    if _auth_service is None:
+        _auth_service = AuthService()
+        logger.info(f"Initialized auth service with {_auth_service.get_valid_keys_count()} valid keys")
+    
+    return _auth_service
+
+# Security scheme for OpenAI API compatibility
+security = HTTPBearer(auto_error=False)
+
+async def verify_api_key(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> str:
+    """Verify API key for OpenAI API compatibility."""
+    if not settings.enable_auth:
+        return "no-auth-required"
+    
+    auth_service = get_auth_service()
+    
+    # Try to get API key from Authorization header (Bearer token)
+    api_key = None
+    if credentials:
+        api_key = credentials.credentials
+    
+    # Fallback: try custom header name or direct Authorization header
+    if not api_key:
+        auth_header = request.headers.get(settings.auth_header_name)
+        if auth_header:
+            # Handle both "Bearer xxx" and direct key formats
+            if auth_header.startswith("Bearer "):
+                api_key = auth_header[7:]
+            else:
+                api_key = auth_header
+    
+    if not api_key:
+        logger.warning("Missing API key in request")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "message": "Missing API key. Please provide a valid API key in the Authorization header.",
+                    "type": "authentication_error",
+                    "code": "missing_api_key"
+                }
+            }
+        )
+    
+    if not auth_service.is_valid_key(api_key):
+        logger.warning(f"Invalid API key provided: {api_key[:8]}...")
+        auth_service.record_request(api_key, success=False)
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "message": "Invalid API key provided. Please check your API key and try again.",
+                    "type": "authentication_error",
+                    "code": "invalid_api_key"
+                }
+            }
+        )
+    
+    # Record successful authentication
+    auth_service.record_request(api_key, success=True)
+    return api_key
+
 
 @app.get("/", summary="Root endpoint")
-async def root() -> Dict[str, Any]:
+async def root(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
     """Root endpoint that provides basic API information."""
     services = settings.get_router_services()
+    auth_service = get_auth_service()
+    
     return {
         "message": "LLM Router - OpenAI API compatible endpoint",
         "version": settings.api_version,
@@ -81,12 +155,17 @@ async def root() -> Dict[str, Any]:
         "mode": "router",
         "services_count": len(services),
         "services": [{"name": s.name, "type": s.backend_type, "priority": s.priority} for s in services],
-        "primary_backend": services[0].backend_type if services else "unknown"
+        "primary_backend": services[0].backend_type if services else "unknown",
+        "authentication": {
+            "enabled": settings.enable_auth,
+            "valid_keys_count": auth_service.get_valid_keys_count(),
+            "auth_header": settings.auth_header_name
+        }
     }
 
 
 @app.get("/backend/info", summary="Backend information")
-async def backend_info() -> Dict[str, Any]:
+async def backend_info(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
     """Get information about the current backend configuration."""
     router = get_router_service()
     return {
@@ -110,29 +189,68 @@ async def health_check() -> Dict[str, Any]:
 
 
 @app.get("/router/stats", summary="Router statistics")
-async def router_stats() -> Dict[str, Any]:
+async def router_stats(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
     """Get router statistics."""
     router = get_router_service()
     return router.get_stats()
 
 
 @app.get("/router/health", summary="Router health check")
-async def router_health() -> Dict[str, Any]:
+async def router_health(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
     """Get detailed health information for all services."""
     router = get_router_service()
     return router.get_health()
 
 
 @app.post("/router/reset-stats", summary="Reset router statistics")
-async def reset_router_stats() -> Dict[str, str]:
+async def reset_router_stats(api_key: str = Depends(verify_api_key)) -> Dict[str, str]:
     """Reset router statistics."""
     router = get_router_service()
     router.reset_stats()
     return {"status": "success", "message": "Router statistics reset"}
 
 
+@app.get("/auth/metrics", summary="Authentication metrics")
+async def auth_metrics(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
+    """Get authentication metrics and API key usage statistics."""
+    auth_service = get_auth_service()
+    return auth_service.get_metrics()
+
+
+@app.post("/auth/reset-metrics", summary="Reset authentication metrics")
+async def reset_auth_metrics(api_key: str = Depends(verify_api_key)) -> Dict[str, str]:
+    """Reset authentication metrics."""
+    auth_service = get_auth_service()
+    auth_service.reset_metrics()
+    return {"status": "success", "message": "Authentication metrics reset"}
+
+
+@app.post("/auth/reload-keys", summary="Reload authentication keys")
+async def reload_auth_keys(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
+    """Reload authentication keys from environment variables."""
+    auth_service = get_auth_service()
+    auth_service.reload_keys()
+    return {
+        "status": "success", 
+        "message": "Authentication keys reloaded",
+        "valid_keys_count": auth_service.get_valid_keys_count()
+    }
+
+
+@app.get("/auth/status", summary="Authentication status")
+async def auth_status(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
+    """Get authentication system status."""
+    auth_service = get_auth_service()
+    return {
+        "enabled": settings.enable_auth,
+        "valid_keys_count": auth_service.get_valid_keys_count(),
+        "auth_header": settings.auth_header_name,
+        "system_status": "active" if auth_service.get_valid_keys_count() > 0 else "no_keys_loaded"
+    }
+
+
 @app.get("/router/rate-limits", summary="Rate limiting status")
-async def router_rate_limits() -> Dict[str, Any]:
+async def router_rate_limits(api_key: str = Depends(verify_api_key)) -> Dict[str, Any]:
     """Get current rate limiting status for all services."""
     router = get_router_service()
     stats = router.get_stats()
@@ -152,6 +270,7 @@ async def router_rate_limits() -> Dict[str, Any]:
 )
 async def create_chat_completion(
     request: ChatCompletionRequest,
+    api_key: str = Depends(verify_api_key),
     router: RouterService = Depends(get_router_service)
 ) -> ChatCompletionResponse:
     """
@@ -161,6 +280,7 @@ async def create_chat_completion(
     """
     try:
         logger.info(f"Received chat completion request for model: {request.model}")
+        logger.info(f"Request: {request}")
         response = await router.chat_completion(request)
         logger.info(f"Successfully processed chat completion for model: {request.model}")
         return response
@@ -186,6 +306,7 @@ async def create_chat_completion(
     description="Lists the currently available models."
 )
 async def list_models(
+    api_key: str = Depends(verify_api_key),
     router: RouterService = Depends(get_router_service)
 ) -> Dict[str, Any]:
     """
@@ -216,6 +337,7 @@ async def list_models(
 )
 async def get_model(
     model_id: str,
+    api_key: str = Depends(verify_api_key),
     router: RouterService = Depends(get_router_service)
 ) -> Dict[str, Any]:
     """

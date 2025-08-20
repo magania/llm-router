@@ -53,17 +53,17 @@ def mock_router_service():
 class TestHealthEndpoints:
     """Test health and status endpoints."""
     
-    def test_root_endpoint(self, client):
+    def test_root_endpoint(self, client, auth_headers):
         """Test root endpoint returns basic info."""
-        response = client.get("/")
+        response = client.get("/", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
         assert "message" in data
         assert "LLM Router" in data["message"]
         
-    def test_health_endpoint(self, client):
-        """Test health endpoint."""
+    def test_health_endpoint_no_auth_required(self, client):
+        """Test health endpoint does NOT require authentication."""
         with patch('app.app.get_router_service') as mock_get_router, \
              patch('app.app._router_instance', None):
             mock_router = MagicMock()
@@ -73,12 +73,29 @@ class TestHealthEndpoints:
             }
             mock_get_router.return_value = mock_router
             
+            # Call without auth headers - should still work
             response = client.get("/health")
             
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "healthy"
             assert "details" in data
+            
+    def test_backend_info_requires_auth(self, client, auth_headers):
+        """Test backend info endpoint requires authentication."""
+        with patch('app.app.get_router_service') as mock_get_router, \
+             patch('app.app._router_instance', None):
+            mock_router = MagicMock()
+            mock_router.get_stats.return_value = {"test": "data"}
+            mock_router.get_health.return_value = {"test": "health"}
+            mock_get_router.return_value = mock_router
+            
+            response = client.get("/backend/info", headers=auth_headers)
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "mode" in data
+            assert "status" in data
 
 
 # @pytest.mark.unit 
@@ -356,7 +373,7 @@ class TestHealthEndpoints:
 class TestRouterEndpoints:
     """Test router-specific endpoints."""
     
-    def test_router_stats(self, client):
+    def test_router_stats(self, client, auth_headers):
         """Test router statistics endpoint."""
         mock_stats = {
             "total_requests": 10,
@@ -374,7 +391,7 @@ class TestRouterEndpoints:
             mock_router.get_stats.return_value = mock_stats
             mock_get_router.return_value = mock_router
             
-            response = client.get("/router/stats")
+            response = client.get("/router/stats", headers=auth_headers)
             
             assert response.status_code == 200
             data = response.json()
@@ -385,7 +402,7 @@ class TestRouterEndpoints:
             assert "cerebras" in data["service_stats"]
             assert "openai" in data["service_stats"]
             
-    def test_router_health(self, client):
+    def test_router_health(self, client, auth_headers):
         """Test router health endpoint."""
         mock_health = {
             "overall_status": "healthy",
@@ -401,14 +418,14 @@ class TestRouterEndpoints:
             mock_router.get_health.return_value = mock_health
             mock_get_router.return_value = mock_router
             
-            response = client.get("/router/health")
+            response = client.get("/router/health", headers=auth_headers)
             
             assert response.status_code == 200
             data = response.json()
             assert data["overall_status"] == "healthy"
             assert "services" in data
             
-    def test_router_reset_stats(self, client):
+    def test_router_reset_stats(self, client, auth_headers):
         """Test router reset statistics endpoint."""
         with patch('app.app.get_router_service') as mock_get_router, \
              patch('app.app._router_instance', None):
@@ -416,7 +433,7 @@ class TestRouterEndpoints:
             mock_router.reset_stats.return_value = None
             mock_get_router.return_value = mock_router
             
-            response = client.post("/router/reset-stats")
+            response = client.post("/router/reset-stats", headers=auth_headers)
             
             assert response.status_code == 200
             data = response.json()
@@ -460,6 +477,105 @@ class TestRouterEndpoints:
     #         assert "cerebras" in data["services"]
     #         assert data["services"]["cerebras"]["remaining_requests"] == 7
     #         assert data["services"]["openai"]["unlimited"] is True
+
+
+@pytest.mark.unit
+class TestAuthEndpoints:
+    """Test authentication-related endpoints."""
+    
+    def test_auth_metrics(self, client, auth_headers):
+        """Test authentication metrics endpoint."""
+        response = client.get("/auth/metrics", headers=auth_headers)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "valid_keys_count" in data
+        assert "total_requests" in data
+        assert "success_rate" in data
+        
+    def test_auth_reset_metrics(self, client, auth_headers):
+        """Test authentication reset metrics endpoint."""
+        response = client.post("/auth/reset-metrics", headers=auth_headers)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Authentication metrics reset"
+        
+    def test_auth_reload_keys(self, client, auth_headers):
+        """Test authentication reload keys endpoint."""
+        response = client.post("/auth/reload-keys", headers=auth_headers)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Authentication keys reloaded"
+        assert "valid_keys_count" in data
+        
+    def test_auth_status(self, client, auth_headers):
+        """Test authentication status endpoint."""
+        with patch('app.app.settings') as mock_settings:
+            mock_settings.enable_auth = True
+            mock_settings.auth_header_name = "Authorization"
+            
+            response = client.get("/auth/status", headers=auth_headers)
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "enabled" in data
+            assert "valid_keys_count" in data
+            assert "auth_header" in data
+            
+    def test_router_rate_limits(self, client, auth_headers):
+        """Test router rate limits endpoint."""
+        mock_stats = {
+            "rate_limiting": {},
+            "total_rate_limit_skips": 5,
+            "rate_limit_skip_rate": 10.5
+        }
+        
+        with patch('app.app.get_router_service') as mock_get_router:
+            mock_router = MagicMock()
+            mock_router.get_stats.return_value = mock_stats
+            mock_get_router.return_value = mock_router
+            
+            response = client.get("/router/rate-limits", headers=auth_headers)
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "rate_limiting" in data
+            assert "total_rate_limit_skips" in data
+            assert "current_time" in data
+
+
+@pytest.mark.unit
+class TestAuthenticationValidation:
+    """Test authentication validation for protected endpoints."""
+    
+    def test_unauthorized_access_root(self, client):
+        """Test unauthorized access to root endpoint."""
+        response = client.get("/")
+        assert response.status_code == 401
+        data = response.json()
+        assert "error" in data
+        
+    def test_unauthorized_access_router_stats(self, client):
+        """Test unauthorized access to router stats endpoint."""
+        response = client.get("/router/stats")
+        assert response.status_code == 401
+        data = response.json()
+        assert "error" in data
+        
+    def test_invalid_api_key(self, client, invalid_auth_headers):
+        """Test invalid API key."""
+        # Mock auth service to return False for invalid keys
+        with patch('app.app.get_auth_service') as mock_get_auth:
+            mock_auth = MagicMock()
+            mock_auth.is_valid_key.return_value = False
+            mock_get_auth.return_value = mock_auth
+            
+            response = client.get("/", headers=invalid_auth_headers)
+            assert response.status_code == 401
+            data = response.json()
+            assert "error" in data
 
 
 # @pytest.mark.unit

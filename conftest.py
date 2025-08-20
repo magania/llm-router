@@ -283,3 +283,48 @@ def ollama_models_response():
             }
         ]
     }
+
+
+@pytest.fixture
+def auth_headers():
+    """Valid authentication headers for testing."""
+    return {"Authorization": "Bearer test-api-key"}
+
+
+@pytest.fixture
+def invalid_auth_headers():
+    """Invalid authentication headers for testing."""
+    return {"Authorization": "Bearer invalid-key"}
+
+
+@pytest.fixture(autouse=True)
+def mock_auth_service():
+    """Mock authentication service for all tests."""
+    with patch('app.app.get_auth_service') as mock_get_auth, \
+         patch('app.app._auth_service', None):
+        
+        mock_auth = MagicMock()
+        mock_auth.get_valid_keys_count.return_value = 1
+        mock_auth.is_valid_key.return_value = True  # Default to valid key
+        mock_auth.record_request.return_value = None
+        mock_auth.get_metrics.return_value = {
+            "valid_keys_count": 1,
+            "total_requests": 10,
+            "total_success": 9,
+            "total_errors": 1,
+            "success_rate": 90.0,
+            "keys_metrics": {},
+            "active_keys": 1
+        }
+        
+        mock_get_auth.return_value = mock_auth
+        yield mock_auth
+
+
+@pytest.fixture
+def disable_auth():
+    """Fixture to disable authentication for testing."""
+    with patch('app.app.settings') as mock_settings:
+        mock_settings.enable_auth = False
+        mock_settings.get_router_services.return_value = []
+        yield mock_settings

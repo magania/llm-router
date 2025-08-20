@@ -71,7 +71,7 @@ class Settings(BaseSettings):
         "https://api.cerebras.ai/v1", 
         description="Cerebras API base URL"
     )
-    cerebras_rate_limit_requests: int = Field(100, description="Cerebras rate limit requests")
+    cerebras_rate_limit_requests: int = Field(30, description="Cerebras rate limit requests")
     cerebras_rate_limit_window: int = Field(60, description="Cerebras rate limit window in seconds")
     
     # DeepInfra specific
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     
     # Local ollama specific
     ollama_base_url: str = Field(
-        "http://localhost:11434",
+        "http://localhost:11434/v1",
         description="Local ollama server base URL"
     )
     
@@ -115,6 +115,10 @@ class Settings(BaseSettings):
 
     # Router configuration
     router_services: str = Field("", description="JSON string of router services configuration")
+    
+    # Authentication configuration
+    enable_auth: bool = Field(True, description="Enable API key authentication")
+    auth_header_name: str = Field("Authorization", description="HTTP header name for authentication")
 
     
     def get_router_services(self) -> List[ServiceConfig]:
