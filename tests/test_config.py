@@ -114,7 +114,7 @@ class TestSettingsInit:
             'CEREBRAS_API_KEY', 'CEREBRAS_BASE_URL', 'CEREBRAS_RATE_LIMIT_REQUESTS', 'CEREBRAS_RATE_LIMIT_WINDOW',
             'DEEPINFRA_TOKEN', 'DEEPINFRA_BASE_URL',
             'OPENAI_API_KEY', 'OPENAI_BASE_URL',
-            'OLLAMA_BASE_URL',
+            'OLLAMA_BASE_URL', 'OLLAMA_AUTH_KEY',
             'HOST', 'PORT',
             'API_TITLE', 'API_DESCRIPTION', 'API_VERSION',
             'REQUEST_TIMEOUT', 'ROUTER_SERVICES',
@@ -135,7 +135,7 @@ class TestSettingsInit:
             assert settings.cerebras_base_url == "https://api.cerebras.ai/v1"
             assert settings.openai_api_key is None
             assert settings.openai_base_url == "https://api.openai.com/v1"
-            assert settings.ollama_base_url == "http://localhost:11434"
+            assert settings.ollama_base_url == "http://localhost:11434/v1"
             assert settings.request_timeout == 60
             assert settings.router_services == ""
             
@@ -215,16 +215,19 @@ class TestRouterServices:
             router_services="",  # Empty JSON
             cerebras_api_key="cerebras-key",
             cerebras_base_url="https://api.cerebras.ai/v1",
+            deepinfra_token="deepinfra-key",
+            deepinfra_base_url="https://api.deepinfra.com/v1/openai",
             openai_api_key="openai-key",
             openai_base_url="https://api.openai.com/v1"
         )
         
         services = settings.get_router_services()
         
-        assert len(services) >= 3  # Should have cerebras, openai, and ollama
+        assert len(services) == 3  # Should have cerebras, deepinfra, and openai (ollama not configured)
         
         # Find services by name
         cerebras_service = next((s for s in services if s.name == "cerebras"), None)
+        deepinfra_service = next((s for s in services if s.name == "deepinfra"), None)
         openai_service = next((s for s in services if s.name == "openai"), None)
         ollama_service = next((s for s in services if s.name == "ollama"), None)
         
@@ -232,13 +235,106 @@ class TestRouterServices:
         assert cerebras_service.api_key == "cerebras-key"
         assert cerebras_service.base_url == "https://api.cerebras.ai/v1"
         
+        assert deepinfra_service is not None
+        assert deepinfra_service.api_key == "deepinfra-key"
+        assert deepinfra_service.base_url == "https://api.deepinfra.com/v1/openai"
+        
         assert openai_service is not None
         assert openai_service.api_key == "openai-key"
         assert openai_service.base_url == "https://api.openai.com/v1"
         
-        assert ollama_service is not None
-        assert ollama_service.api_key is None
-        assert ollama_service.base_url == "http://localhost:11434"
+        assert ollama_service is None  # Ollama should not be included when not configured
+        
+    def test_get_router_services_with_ollama_configured_by_base_url(self):
+        """Test that Ollama is included when a custom base URL is configured."""
+        settings = Settings(
+            router_services="",  # Empty JSON
+            cerebras_api_key="cerebras-key",
+            cerebras_base_url="https://api.cerebras.ai/v1",
+            deepinfra_token="deepinfra-key",
+            deepinfra_base_url="https://api.deepinfra.com/v1/openai",
+            openai_api_key="openai-key",
+            openai_base_url="https://api.openai.com/v1",
+            ollama_base_url="http://custom-ollama:11434/v1"  # Custom URL
+        )
+        
+        services = settings.get_router_services()
+        
+        assert len(services) == 4  # Should have cerebras, deepinfra, openai, and ollama
+        
+        # Find services by name
+        cerebras_service = next((s for s in services if s.name == "cerebras"), None)
+        deepinfra_service = next((s for s in services if s.name == "deepinfra"), None)
+        openai_service = next((s for s in services if s.name == "openai"), None)
+        ollama_service = next((s for s in services if s.name == "ollama"), None)
+        
+        assert cerebras_service is not None
+        assert deepinfra_service is not None
+        assert openai_service is not None
+        assert ollama_service is not None  # Ollama should be included when custom URL is set
+        assert ollama_service.base_url == "http://custom-ollama:11434/v1"
+        assert ollama_service.api_key is None  # No auth key provided
+        
+    def test_get_router_services_with_ollama_configured_by_auth_key(self):
+        """Test that Ollama is included when an auth key is configured."""
+        settings = Settings(
+            router_services="",  # Empty JSON
+            cerebras_api_key="cerebras-key",
+            cerebras_base_url="https://api.cerebras.ai/v1",
+            deepinfra_token="deepinfra-key",
+            deepinfra_base_url="https://api.deepinfra.com/v1/openai",
+            openai_api_key="openai-key",
+            openai_base_url="https://api.openai.com/v1",
+            ollama_auth_key="ollama-secret-key"  # Auth key provided
+        )
+        
+        services = settings.get_router_services()
+        
+        assert len(services) == 4  # Should have cerebras, deepinfra, openai, and ollama
+        
+        # Find services by name
+        cerebras_service = next((s for s in services if s.name == "cerebras"), None)
+        deepinfra_service = next((s for s in services if s.name == "deepinfra"), None)
+        openai_service = next((s for s in services if s.name == "openai"), None)
+        ollama_service = next((s for s in services if s.name == "ollama"), None)
+        
+        assert cerebras_service is not None
+        assert deepinfra_service is not None
+        assert openai_service is not None
+        assert ollama_service is not None  # Ollama should be included when auth key is set
+        assert ollama_service.base_url == "http://localhost:11434/v1"  # Default URL
+        assert ollama_service.api_key == "ollama-secret-key"  # Auth key should be used
+        
+    def test_get_router_services_with_ollama_configured_by_both(self):
+        """Test that Ollama is included when both custom URL and auth key are configured."""
+        settings = Settings(
+            router_services="",  # Empty JSON
+            cerebras_api_key="cerebras-key",
+            cerebras_base_url="https://api.cerebras.ai/v1",
+            deepinfra_token="deepinfra-key",
+            deepinfra_base_url="https://api.deepinfra.com/v1/openai",
+            openai_api_key="openai-key",
+            openai_base_url="https://api.openai.com/v1",
+            ollama_base_url="http://custom-ollama:11434/v1",
+            ollama_auth_key="ollama-secret-key"
+        )
+        
+        services = settings.get_router_services()
+        
+        assert len(services) == 4  # Should have cerebras, deepinfra, openai, and ollama
+        
+        # Find services by name
+        cerebras_service = next((s for s in services if s.name == "cerebras"), None)
+        deepinfra_service = next((s for s in services if s.name == "deepinfra"), None)
+        openai_service = next((s for s in services if s.name == "openai"), None)
+        ollama_service = next((s for s in services if s.name == "ollama"), None)
+        
+        assert cerebras_service is not None
+        assert deepinfra_service is not None
+        assert openai_service is not None
+        assert ollama_service is not None  # Ollama should be included
+        assert ollama_service.base_url == "http://custom-ollama:11434/v1"  # Custom URL
+        assert ollama_service.api_key == "ollama-secret-key"  # Auth key should be used
         
     def test_get_router_services_invalid_json(self):
         """Test handling of invalid JSON in router services."""
@@ -295,7 +391,7 @@ class TestBackendTypes:
     
     def test_valid_backend_types(self):
         """Test that all defined backend types are valid."""
-        valid_types = ["openai", "cerebras", "ollama", "custom"]
+        valid_types = ["openai", "cerebras", "deepinfra", "ollama", "custom"]
         
         for backend_type in valid_types:
             config = ServiceConfig(
@@ -316,6 +412,7 @@ class TestBackendTypes:
             
         assert test_function("openai") == "openai"
         assert test_function("cerebras") == "cerebras"
+        assert test_function("deepinfra") == "deepinfra"
         assert test_function("ollama") == "ollama"
         assert test_function("custom") == "custom"
 

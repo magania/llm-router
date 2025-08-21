@@ -6,7 +6,7 @@ El LLM Router ahora soporta múltiples backends de APIs compatibles con OpenAI. 
 
 - **OpenAI**: API oficial de OpenAI
 - **Cerebras**: API de Cerebras AI (por defecto)
-- **Local Llama**: Servidores locales como llama.cpp, Ollama, etc.
+- **Ollama**: Servidores locales como llama.cpp, Ollama, etc.
 - **Custom**: Cualquier API compatible con OpenAI
 
 ## 📁 Archivo .env
@@ -41,11 +41,11 @@ OPENAI_API_KEY=sk-your_openai_api_key_here
 # OPENAI_BASE_URL=https://api.openai.com/v1  # Opcional
 ```
 
-#### 3. Local Llama Server
+#### 3. Ollama Server
 ```env
-BACKEND_TYPE=local-llama
-LOCAL_LLAMA_BASE_URL=http://localhost:8080
-# No necesita API key
+BACKEND_TYPE=ollama
+OLLAMA_BASE_URL=http://localhost:11434/v1
+# OLLAMA_AUTH_KEY=your_ollama_auth_key_here  # Only needed if your Ollama setup requires authentication
 ```
 
 #### 4. Custom Backend
@@ -146,8 +146,8 @@ Para cambiar de backend, simplemente:
 
 ### Para Desarrollo Local
 ```env
-BACKEND_TYPE=local-llama
-LOCAL_LLAMA_BASE_URL=http://localhost:8080
+BACKEND_TYPE=ollama
+OLLAMA_BASE_URL=http://localhost:8080
 PORT=8000
 ```
 
@@ -170,7 +170,7 @@ REQUEST_TIMEOUT=30
 ## ⚠️ Notas Importantes
 
 1. **API Keys**: Solo son obligatorias para OpenAI y Cerebras
-2. **Local servers**: No necesitan API key, solo la URL del servidor
+2. **Ollama servers**: No necesitan API key por defecto, solo la URL del servidor. Solo se agregan al router si están configurados.
 3. **Timeout**: Ajusta según la velocidad de tu backend
 4. **URL Format**: Las URLs deben incluir el protocolo (http/https)
 
@@ -186,4 +186,4 @@ REQUEST_TIMEOUT=30
 - Para servers locales, asegúrate de que estén ejecutándose
 
 ### Backend no reconocido
-- Verifica que `BACKEND_TYPE` sea uno de: `openai`, `cerebras`, `local-llama`, `custom`
+- Verifica que `BACKEND_TYPE` sea uno de: `openai`, `cerebras`, `ollama`, `custom`

@@ -97,6 +97,9 @@ class Settings(BaseSettings):
         "http://localhost:11434/v1",
         description="Local ollama server base URL"
     )
+    ollama_auth_key: Optional[str] = Field(
+        None, description="Ollama API authentication key (if required)"
+    )
     
     # Server configuration
     host: str = Field("0.0.0.0", description="Host to bind the server to")
@@ -162,7 +165,7 @@ class Settings(BaseSettings):
         Create fallback services from individual backend configurations.
         Returns:
             List of ServiceConfig objects based on individual backend configs,
-            in the order: cerebras, deepinfra, openai, ollama (cerebras/deepinfra/openai only if API_KEY exists, ollama always)
+            in the order: cerebras, deepinfra, openai, ollama (cerebras/deepinfra/openai only if API_KEY exists, ollama only if configured)
         """
         services = []
         priority = 0
@@ -203,15 +206,22 @@ class Settings(BaseSettings):
             ))
             priority += 1
 
-        # Ollama (always add)
-        services.append(ServiceConfig(
-            name="ollama",
-            backend_type="ollama",
-            base_url=self.ollama_base_url,
-            api_key=None,
-            timeout=self.request_timeout,
-            priority=priority
-        ))
+        # Ollama (only add if explicitly configured)
+        # Add Ollama if base URL is different from default OR if auth key is provided
+        ollama_configured = (
+            self.ollama_base_url != "http://localhost:11434/v1" or 
+            self.ollama_auth_key is not None
+        )
+        
+        if ollama_configured:
+            services.append(ServiceConfig(
+                name="ollama",
+                backend_type="ollama",
+                base_url=self.ollama_base_url,
+                api_key=self.ollama_auth_key,  # Use auth key if provided
+                timeout=self.request_timeout,
+                priority=priority
+            ))
 
         return services
     

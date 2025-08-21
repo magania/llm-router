@@ -60,7 +60,7 @@ def sample_service_configs():
         ),
         ServiceConfig(
             name="ollama",
-            backend_type="local-llama",
+            backend_type="ollama",
             base_url="http://localhost:11434/v1",
             api_key=None,
             timeout=30,

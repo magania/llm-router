@@ -18,6 +18,7 @@
 FastAPI application that replicates OpenAI API and forwards to multiple LLM backends.
 """
 import time
+import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -54,6 +55,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Middleware to handle connection cleanup
+@app.middleware("http")
+async def connection_cleanup_middleware(request: Request, call_next):
+    """
+    Middleware to ensure proper cleanup of resources when connections are closed.
+    """
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        # Log connection errors for debugging
+        if "connection" in str(e).lower() or "disconnect" in str(e).lower():
+            logger.info(f"Connection error detected: {str(e)}")
+        else:
+            logger.error(f"Request processing error: {str(e)}")
+        raise
 
 # Global instances (cached)
 _router_instance = None
@@ -262,6 +280,38 @@ async def router_rate_limits(api_key: str = Depends(verify_api_key)) -> Dict[str
     }
 
 
+async def _stream_wrapper(stream_generator, request: Request = None):
+    """
+    Wrapper for streaming responses to ensure proper cleanup.
+    
+    This wrapper ensures that streaming connections are properly closed
+    and resources are released when the client disconnects or streaming completes.
+    """
+    try:
+        async for chunk in stream_generator:
+            # Check if client has disconnected (if request is available)
+            if request and await request.is_disconnected():
+                logger.info("Client disconnected during streaming, stopping stream")
+                break
+            yield chunk
+    except asyncio.CancelledError:
+        logger.info("Streaming cancelled (client disconnected)")
+        raise
+    except Exception as e:
+        logger.error(f"Error during streaming: {str(e)}")
+        # Re-raise the exception to let FastAPI handle it
+        raise
+    finally:
+        # Ensure cleanup happens even if client disconnects
+        logger.debug("Cleaning up streaming resources")
+        if hasattr(stream_generator, 'aclose'):
+            try:
+                await stream_generator.aclose()
+            except Exception as cleanup_error:
+                logger.debug(f"Error during stream cleanup: {cleanup_error}")
+                # Ignore cleanup errors
+
+
 @app.post(
     "/v1/chat/completions",
     response_model=None,
@@ -270,6 +320,7 @@ async def router_rate_limits(api_key: str = Depends(verify_api_key)) -> Dict[str
 )
 async def create_chat_completion(
     request: ChatCompletionRequest,
+    http_request: Request,
     api_key: str = Depends(verify_api_key),
     router: RouterService = Depends(get_router_service)
 ) -> Union[ChatCompletionResponse, StreamingResponse]:
@@ -289,7 +340,7 @@ async def create_chat_completion(
         if request.stream:
             logger.info(f"Returning streaming response for model: {request.model}")
             return StreamingResponse(
-                response,
+                _stream_wrapper(response, http_request),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",

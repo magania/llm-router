@@ -31,7 +31,7 @@ class TestOpenAIServiceInit:
     def test_init_without_api_key(self):
         """Test initialization without API key."""
         service = OpenAIService(
-            backend_type="local-llama",
+            backend_type="ollama",
             base_url="http://localhost:11434/v1",
             api_key=None,
             timeout=30
@@ -55,7 +55,7 @@ class TestOpenAIServiceInit:
     def test_get_headers_without_api_key(self):
         """Test getting headers without API key."""
         service = OpenAIService(
-            backend_type="local-llama",
+            backend_type="ollama",
             base_url="http://localhost:11434/v1",
             api_key=None,
             timeout=30
@@ -386,9 +386,11 @@ class TestFallbackModels:
         assert models["object"] == "list"
         assert len(models["data"]) > 0
         
-        # Ollama backend uses custom fallback with default model
+        # Ollama backend has specific models
         model_ids = [model["id"] for model in models["data"]]
-        assert "default" in model_ids
+        assert "llama-2-7b-chat" in model_ids
+        assert "llama-2-13b-chat" in model_ids
+        assert "mistral-7b-instruct" in model_ids
         
     def test_get_fallback_models_custom(self):
         """Test getting fallback models for custom backend."""

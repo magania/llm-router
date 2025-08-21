@@ -179,10 +179,12 @@ class OpenAIService:
             payload.pop("logit_bias", None)
             payload.pop("user", None)
         
+        # Use a single client instance for the entire streaming session
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 url = self._get_endpoint_url("chat/completions")
                 
+                # Create the streaming request
                 async with client.stream(
                     "POST",
                     url,
@@ -236,24 +238,16 @@ class OpenAIService:
                                     break
                                 
                                 try:
-                                    # Parse the JSON chunk
-                                    chunk_data = json.loads(data_content)
-                                    
-                                    # Transform the chunk to match OpenAI format
-                                    transformed_chunk = self._transform_stream_chunk(chunk_data, request.model)
-                                    
-                                    # Convert to dict and remove None values for cleaner output
-                                    chunk_dict = transformed_chunk.model_dump(exclude_none=True)
-                                    
-                                    # Yield the transformed chunk as SSE format
-                                    yield f"data: {json.dumps(chunk_dict)}\n\n"
-                                    
+                                    yield f"data: {data_content}\n\n"
                                 except json.JSONDecodeError:
                                     # Skip invalid JSON chunks but log for debugging
                                     continue
                         else:
                             # Forward empty lines to maintain SSE format
                             yield "\n"
+                    
+                    # Ensure the response stream is fully consumed and closed
+                    await response.aclose()
                     
             except httpx.TimeoutException:
                 raise HTTPException(
@@ -277,6 +271,18 @@ class OpenAIService:
                         }
                     }
                 )
+            except Exception as e:
+                # Catch any other exceptions to ensure proper cleanup
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": {
+                            "message": f"Unexpected error with {self.backend_type}: {str(e)}",
+                            "type": "internal_error",
+                            "backend": self.backend_type
+                        }
+                    }
+                )
     
     def _transform_response(self, api_response: Dict[str, Any], model: str) -> ChatCompletionResponse:
         """Transform API response to OpenAI format."""
@@ -290,12 +296,33 @@ class OpenAIService:
                 # Some APIs return 'text' instead of 'message'
                 message_data = {"role": "assistant", "content": choice.get("text", "")}
             
+            # Extract logprobs information
+            logprobs = None
+            logprobs_data = choice.get("logprobs")
+            if logprobs_data:
+                # Parse logprobs content
+                content = []
+                logprobs_content = logprobs_data.get("content", [])
+                for lp_item in logprobs_content:
+                    if isinstance(lp_item, dict):
+                        from .models import LogprobContent
+                        content.append(LogprobContent(
+                            token=lp_item.get("token", ""),
+                            bytes=lp_item.get("bytes"),
+                            logprob=lp_item.get("logprob", 0.0)
+                        ))
+                
+                if content:
+                    from .models import Logprobs
+                    logprobs = Logprobs(content=content)
+            
             transformed_choice = Choice(
                 index=i,
                 message=Message(
                     role=message_data.get("role", "assistant"),
                     content=message_data.get("content", "")
                 ),
+                logprobs=logprobs,
                 finish_reason=choice.get("finish_reason", choice.get("stop_reason"))
             )
             choices.append(transformed_choice)
@@ -313,50 +340,6 @@ class OpenAIService:
             id=api_response.get("id", f"chatcmpl-{uuid.uuid4().hex}"),
             object="chat.completion",
             created=api_response.get("created", int(time.time())),
-            model=model,
-            choices=choices,
-            usage=usage
-        )
-    
-    def _transform_stream_chunk(self, chunk_data: Dict[str, Any], model: str) -> ChatCompletionStreamResponse:
-        """Transform streaming chunk data to OpenAI format."""
-        
-        # Extract choices
-        choices = []
-        for i, choice in enumerate(chunk_data.get("choices", [])):
-            # Handle different delta formats
-            delta_data = choice.get("delta", {})
-            
-            # Some APIs might use different field names
-            if not delta_data and "text" in choice:
-                delta_data = {"content": choice.get("text", "")}
-            
-            # Preserve all delta fields including reasoning_content, tool_calls, etc.
-            # Convert None values to exclude them from the response
-            filtered_delta = {k: v for k, v in delta_data.items() if v is not None}
-            
-            transformed_choice = ChoiceDelta(
-                index=i,
-                delta=filtered_delta,
-                finish_reason=choice.get("finish_reason", choice.get("stop_reason"))
-            )
-            choices.append(transformed_choice)
-        
-        # Extract usage information (only present in final chunks)
-        usage = None
-        usage_data = chunk_data.get("usage")
-        if usage_data:
-            usage = Usage(
-                prompt_tokens=usage_data.get("prompt_tokens", 0),
-                completion_tokens=usage_data.get("completion_tokens", 0),
-                total_tokens=usage_data.get("total_tokens", 0)
-            )
-        
-        # Create streaming response
-        return ChatCompletionStreamResponse(
-            id=chunk_data.get("id", f"chatcmpl-{uuid.uuid4().hex}"),
-            object="chat.completion.chunk",
-            created=chunk_data.get("created", int(time.time())),
             model=model,
             choices=choices,
             usage=usage
@@ -391,6 +374,7 @@ class OpenAIService:
                 {"id": "gpt-4", "object": "model", "created": current_time, "owned_by": "openai"},
                 {"id": "gpt-4-turbo", "object": "model", "created": current_time, "owned_by": "openai"},
                 {"id": "gpt-3.5-turbo", "object": "model", "created": current_time, "owned_by": "openai"},
+                {"id": "qwen/qwen3-coder-480b-a35b-instruct-maas", "object": "model", "created": current_time, "owned_by": "openai"},
             ]
         elif self.backend_type == "cerebras":
             models = [

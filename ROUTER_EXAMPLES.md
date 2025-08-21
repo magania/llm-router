@@ -42,8 +42,8 @@ USE_ROUTER=true
 
 ROUTER_SERVICES='[
   {
-    "name": "local-llama",
-    "backend_type": "local-llama",
+    "name": "ollama",
+    "backend_type": "ollama",
     "base_url": "http://localhost:8080/v1",
     "timeout": 120,
     "priority": 0,

@@ -466,6 +466,7 @@ class RouterService:
         modified_request = request.copy()
         modified_request.model = selected_model
         
+        stream = None
         try:
             logger.info(f"Starting streaming chat completion with service '{selected_service_name}' using model '{selected_model}'")
             start_time = time.time()
@@ -473,45 +474,9 @@ class RouterService:
             # Get the streaming response from the service
             stream = await selected_service.chat_completion(modified_request)
             
-            # Yield metadata as first chunk (for debugging/info)
-            router_metadata = {
-                "service": selected_service_name,
-                "backend_type": self.service_configs[selected_index].backend_type,
-                "requested_model": request.model,
-                "actual_model": selected_model,
-                "model_options": model_options,
-                "streaming": True
-            }
-            
-            # Yield each chunk from the stream, adding router metadata to first data chunk
-            first_data_chunk = True
+            # Yield each chunk from the stream as-is without router metadata
             async for chunk in stream:
-                # Handle ping messages and comments - pass through as-is
-                if chunk.startswith(": "):
-                    yield chunk
-                    continue
-                
-                # Handle data chunks
-                if chunk.startswith("data: ") and first_data_chunk and not chunk.startswith("data: [DONE]"):
-                    try:
-                        import json
-                        chunk_data = chunk[6:]  # Remove "data: " prefix  
-                        parsed_chunk = json.loads(chunk_data)
-                        
-                        # Add router metadata to the first data chunk
-                        parsed_chunk["router"] = router_metadata
-                        yield f"data: {json.dumps(parsed_chunk)}\n\n"
-                        first_data_chunk = False
-                        continue
-                    except json.JSONDecodeError:
-                        pass  # Fall through to normal yield
-                
-                # For all other chunks (including subsequent data chunks, [DONE], empty lines)
                 yield chunk
-                
-                # Mark that we've seen a data chunk
-                if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
-                    first_data_chunk = False
             
             duration = time.time() - start_time
             logger.info(f"✅ Completed streaming with service '{selected_service_name}' in {duration:.2f}s")
@@ -536,6 +501,14 @@ class RouterService:
                         }
                     }
                 )
+        finally:
+            # Ensure any resources are cleaned up
+            if stream is not None and hasattr(stream, 'aclose'):
+                try:
+                    await stream.aclose()
+                except Exception:
+                    # Ignore errors during cleanup
+                    pass
     
     async def list_models(self) -> Dict[str, Any]:
         """
