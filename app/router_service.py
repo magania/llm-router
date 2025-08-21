@@ -20,7 +20,7 @@ Router service that manages multiple OpenAI-compatible services with failover an
 import time
 import logging
 from collections import deque, defaultdict
-from typing import Dict, Any, List, Optional, Tuple, Deque
+from typing import Dict, Any, List, Optional, Tuple, Deque, AsyncIterator, Union
 from fastapi import HTTPException
 
 from .openai_service import OpenAIService
@@ -210,13 +210,21 @@ class RouterService:
         
         return None
     
-    async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
+    async def chat_completion(self, request: ChatCompletionRequest) -> Union[ChatCompletionResponse, AsyncIterator[str]]:
         """
         Execute chat completion with rate limiting and automatic failover.
         
         Supports model fallback syntax: "model1|model2|model3" will try models in order
         based on what each service supports. Updates model cache when needed.
         """
+        # Check if streaming is requested
+        if request.stream:
+            return self._stream_chat_completion(request)
+        else:
+            return await self._regular_chat_completion(request)
+    
+    async def _regular_chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
+        """Execute regular (non-streaming) chat completion with failover."""
         self.request_count += 1
         last_exception = None
         attempted_services = set()
@@ -387,6 +395,147 @@ class RouterService:
                     }
                 }
             )
+    
+    async def _stream_chat_completion(self, request: ChatCompletionRequest) -> AsyncIterator[str]:
+        """
+        Execute streaming chat completion with limited failover.
+        
+        For streaming requests, we can't do traditional failover once we start streaming
+        because we've already started returning data to the client.
+        """
+        self.request_count += 1
+        
+        # Parse model options (support fallback syntax with |)
+        model_options = self._parse_model_options(request.model)
+        logger.info(f"Parsed model options for streaming: {model_options}")
+        
+        # Try to refresh cache for any services that don't have valid cache
+        await self._refresh_stale_caches()
+        
+        # Find the first available service that supports the requested model
+        selected_index = None
+        selected_service_name = None
+        selected_service = None
+        selected_model = None
+        
+        for i, (service_name, service) in enumerate(self.services):
+            service_config = self.service_configs[i]
+            
+            # Check rate limiting
+            if self._is_rate_limited(service_name, service_config):
+                self.service_stats[service_name]["rate_limited"] += 1
+                logger.info(f"⏭️  Skipping rate limited service '{service_name}' for streaming")
+                self.rate_limit_skips += 1
+                continue
+            
+            # Check if service supports any of the requested model options
+            best_model = self._get_best_model_for_service(service_name, model_options)
+            if best_model is None:
+                logger.info(f"⏭️  Skipping service '{service_name}' for streaming - doesn't support any of: {model_options}")
+                continue
+            
+            # Service is available and supports the model
+            selected_index = i
+            selected_service_name = service_name
+            selected_service = service
+            selected_model = best_model
+            logger.info(f"Selected service '{service_name}' for streaming with model '{best_model}'")
+            break
+        
+        # If no service is available
+        if selected_index is None:
+            logger.error(f"🚨 No services available for streaming request")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "message": "No configured services are available for streaming",
+                        "type": "service_unavailable",
+                        "streaming": True
+                    }
+                }
+            )
+        
+        # Record the request for rate limiting BEFORE the actual call
+        self._record_request(selected_service_name)
+        
+        # Track service usage
+        self.service_stats[selected_service_name]["requests"] += 1
+        
+        # Create a copy of the request with the selected model
+        modified_request = request.copy()
+        modified_request.model = selected_model
+        
+        try:
+            logger.info(f"Starting streaming chat completion with service '{selected_service_name}' using model '{selected_model}'")
+            start_time = time.time()
+            
+            # Get the streaming response from the service
+            stream = await selected_service.chat_completion(modified_request)
+            
+            # Yield metadata as first chunk (for debugging/info)
+            router_metadata = {
+                "service": selected_service_name,
+                "backend_type": self.service_configs[selected_index].backend_type,
+                "requested_model": request.model,
+                "actual_model": selected_model,
+                "model_options": model_options,
+                "streaming": True
+            }
+            
+            # Yield each chunk from the stream, adding router metadata to first data chunk
+            first_data_chunk = True
+            async for chunk in stream:
+                # Handle ping messages and comments - pass through as-is
+                if chunk.startswith(": "):
+                    yield chunk
+                    continue
+                
+                # Handle data chunks
+                if chunk.startswith("data: ") and first_data_chunk and not chunk.startswith("data: [DONE]"):
+                    try:
+                        import json
+                        chunk_data = chunk[6:]  # Remove "data: " prefix  
+                        parsed_chunk = json.loads(chunk_data)
+                        
+                        # Add router metadata to the first data chunk
+                        parsed_chunk["router"] = router_metadata
+                        yield f"data: {json.dumps(parsed_chunk)}\n\n"
+                        first_data_chunk = False
+                        continue
+                    except json.JSONDecodeError:
+                        pass  # Fall through to normal yield
+                
+                # For all other chunks (including subsequent data chunks, [DONE], empty lines)
+                yield chunk
+                
+                # Mark that we've seen a data chunk
+                if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                    first_data_chunk = False
+            
+            duration = time.time() - start_time
+            logger.info(f"✅ Completed streaming with service '{selected_service_name}' in {duration:.2f}s")
+            
+        except Exception as e:
+            logger.error(f"❌ Streaming failed with service '{selected_service_name}': {str(e)}")
+            
+            # Track failure
+            self.service_stats[selected_service_name]["failures"] += 1
+            
+            # For streaming, we can't do fallback, so we raise the error
+            if isinstance(e, HTTPException):
+                raise e
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": {
+                            "message": f"Streaming failed with service '{selected_service_name}': {str(e)}",
+                            "type": "streaming_error",
+                            "service": selected_service_name
+                        }
+                    }
+                )
     
     async def list_models(self) -> Dict[str, Any]:
         """

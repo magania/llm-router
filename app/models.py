@@ -81,6 +81,15 @@ class Choice(BaseModel):
     )
 
 
+class ChoiceDelta(BaseModel):
+    """A streaming choice delta."""
+    index: int = Field(..., description="The index of this choice")
+    delta: Dict[str, Any] = Field(..., description="The delta content for this choice")
+    finish_reason: Optional[Literal["stop", "length", "content_filter"]] = Field(
+        None, description="The reason the model stopped generating tokens"
+    )
+
+
 class Usage(BaseModel):
     """Usage statistics for the completion request."""
     prompt_tokens: int = Field(..., description="Number of tokens in the prompt")
@@ -98,6 +107,25 @@ class ChatCompletionResponse(BaseModel):
     model: str = Field(..., description="The model used for the chat completion")
     choices: List[Choice] = Field(..., description="A list of chat completion choices")
     usage: Usage = Field(..., description="Usage statistics for the completion request")
+    
+    # Router metadata (optional, not part of OpenAI standard)
+    router: Optional[Dict[str, Any]] = Field(None, description="Router processing information")
+    
+    model_config = {"extra": "ignore"}
+
+
+class ChatCompletionStreamResponse(BaseModel):
+    """Response model for streaming chat completions."""
+    id: str = Field(..., description="A unique identifier for the chat completion")
+    object: Literal["chat.completion.chunk"] = Field(
+        "chat.completion.chunk", description="The object type"
+    )
+    created: int = Field(..., description="The Unix timestamp of when the completion was created")
+    model: str = Field(..., description="The model used for the chat completion")
+    choices: List[ChoiceDelta] = Field(..., description="A list of streaming choice deltas")
+    
+    # Usage is only present in the final chunk
+    usage: Optional[Usage] = Field(None, description="Usage statistics (only in final chunk)")
     
     # Router metadata (optional, not part of OpenAI standard)
     router: Optional[Dict[str, Any]] = Field(None, description="Router processing information")

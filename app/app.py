@@ -20,10 +20,10 @@ FastAPI application that replicates OpenAI API and forwards to multiple LLM back
 import time
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 from .config import settings
 from .models import (
@@ -264,26 +264,42 @@ async def router_rate_limits(api_key: str = Depends(verify_api_key)) -> Dict[str
 
 @app.post(
     "/v1/chat/completions",
-    response_model=ChatCompletionResponse,
+    response_model=None,
     summary="Create chat completion",
-    description="Creates a model response for the given chat conversation."
+    description="Creates a model response for the given chat conversation. Supports both regular and streaming responses."
 )
 async def create_chat_completion(
     request: ChatCompletionRequest,
     api_key: str = Depends(verify_api_key),
     router: RouterService = Depends(get_router_service)
-) -> ChatCompletionResponse:
+) -> Union[ChatCompletionResponse, StreamingResponse]:
     """
     Create a chat completion using the router.
     
     This endpoint is compatible with OpenAI's chat completions API.
+    Supports both regular and streaming responses based on the request.stream parameter.
     """
     try:
-        logger.info(f"Received chat completion request for model: {request.model}")
-        logger.info(f"Request: {request}")
+        logger.info(f"Received chat completion request for model: {request.model} (stream: {request.stream})")
+        logger.debug(f"Request: {request}")
+        
         response = await router.chat_completion(request)
-        logger.info(f"Successfully processed chat completion for model: {request.model}")
-        return response
+        
+        # Check if the response is streaming
+        if request.stream:
+            logger.info(f"Returning streaming response for model: {request.model}")
+            return StreamingResponse(
+                response,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"  # Disable nginx buffering if present
+                }
+            )
+        else:
+            logger.info(f"Successfully processed chat completion for model: {request.model}")
+            return response
         
     except HTTPException:
         raise
